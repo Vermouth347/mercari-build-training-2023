@@ -15,6 +15,7 @@ type ItemsList struct {
 }
 
 type ItemInfo struct {
+	Id            int32  `json:"id"`
 	Name          string `json:"name"`
 	CategoryName  string `json:"category_name"`
 	ImageFilename string `json:"image_filename"`
@@ -59,7 +60,7 @@ func (s *ItemsDB) AddItemToDb(item *ItemInfo) error {
 }
 
 func (s *ItemsDB) GetAllItems() (r *ItemsList, e error) {
-	rows, err := s.Db.Query("SELECT items.name, category.name, image_name FROM items INNER JOIN category ON items.category_id=category.id")
+	rows, err := s.Db.Query("SELECT items.id, items.name, category.name, image_name FROM items INNER JOIN category ON items.category_id=category.id")
 	if err != nil {
 		fmt.Printf("error querying items: %v\n", err)
 		return r, err
@@ -68,7 +69,7 @@ func (s *ItemsDB) GetAllItems() (r *ItemsList, e error) {
 	var items []ItemInfo
 	var item ItemInfo
 	for rows.Next() {
-		err = rows.Scan(&item.Name, &item.CategoryName, &item.ImageFilename)
+		err = rows.Scan(&item.Id, &item.Name, &item.CategoryName, &item.ImageFilename)
 		if err != nil {
 			fmt.Printf("error scanning rows: %v\n", err)
 			return r, err
