@@ -2,13 +2,14 @@ package main
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/labstack/gommon/log"
 	"io/ioutil"
+	"mercari-build-training-2023/app/db"
 	"net/http"
 	"os"
 	"path"
@@ -16,22 +17,16 @@ import (
 	"strings"
 )
 
+var itemDb *db.ItemsDB
+
 const (
-	ImgDir = "images"
+	ImgDir = "../images"
+	dbType = "sqlite3"
+	dbPath = "sql/mercari.sqlite3"
 )
 
 type Response struct {
 	Message string `json:"message"`
-}
-
-type ResponseItems struct {
-	Items []ItemInfo `json:"items"`
-}
-
-type ItemInfo struct {
-	Name          string `json:"name"`
-	Category      string `json:"category"`
-	ImageFilename string `json:"image_filename"`
 }
 
 func root(c echo.Context) error {
@@ -40,17 +35,6 @@ func root(c echo.Context) error {
 }
 
 func addItem(c echo.Context) error {
-	// Open and read items.json
-	var jsonItems ResponseItems
-	jsonFile, err := os.Open("items.json")
-	if err != nil {
-		fmt.Println("fail to open items.json")
-	}
-	defer jsonFile.Close()
-	jsonData, err := ioutil.ReadAll(jsonFile)
-	//convert []byte to json
-	json.Unmarshal(jsonData, &jsonItems)
-
 	// Get form data
 	name := c.FormValue("name")
 	c.Logger().Infof("Receive item: %s", name)
@@ -58,41 +42,44 @@ func addItem(c echo.Context) error {
 	imgFile, err := c.FormFile("image")
 	var imgFileName string
 	if err != nil {
-		fmt.Println("fail to open image file")
-	} else {
-		// open the image file
-		imgData, err := imgFile.Open()
-
-		if err != nil {
-			fmt.Println("fail to read image file")
-			return err
-		}
-		defer imgData.Close()
-
-		bytes, _ := ioutil.ReadAll(imgData)
-
-		// sha256
-		ShaInstance := sha256.New()
-		ShaInstance.Write([]byte(bytes))
-		shaRes := ShaInstance.Sum(nil)
-		fmt.Printf("%x\n\n", shaRes)
-		imgFileName = hex.EncodeToString(shaRes) + ".jpg"
-
-		// save the image file with hashed name
-		os.WriteFile(imgFileName, bytes, 0666)
+		fmt.Printf("error opening image file: %v\n", err)
+		return err
 	}
+	// open the image file
+	imgData, err := imgFile.Open()
+	if err != nil {
+		fmt.Printf("error reading image file: %v\n", err)
+		return err
+	}
+	defer imgData.Close()
 
-	itemData := &ItemInfo{
+	bytes, err := ioutil.ReadAll(imgData)
+	if err != nil {
+		fmt.Printf("error reading image data: %v\n", err)
+		return err
+	}
+	// sha256
+	ShaInstance := sha256.New()
+	ShaInstance.Write([]byte(bytes))
+	shaRes := ShaInstance.Sum(nil)
+	fmt.Printf("%x\n\n", shaRes)
+	imgFileName = hex.EncodeToString(shaRes) + ".jpg"
+
+	// save the image file with hashed name
+	os.WriteFile(imgFileName, bytes, 0666)
+
+	itemData := &db.ItemInfo{
 		Name:          name,
-		Category:      category,
+		CategoryName:  category,
 		ImageFilename: imgFileName,
 	}
 
-	jsonItems.Items = append(jsonItems.Items, *itemData)
-
-	// convert json to []byte and write it in json file
-	data, _ := json.MarshalIndent(jsonItems, "", "\t")
-	os.WriteFile("items.json", data, 0777)
+	// add item
+	err = itemDb.AddItemToDb(itemData)
+	if err != nil {
+		fmt.Printf("error adding item to db: %v\n", err)
+		return err
+	}
 
 	message := fmt.Sprintf("item received: %s", name)
 	res := Response{Message: message}
@@ -100,53 +87,39 @@ func addItem(c echo.Context) error {
 }
 
 func getItems(c echo.Context) error {
-	jsonFile, err := os.Open("items.json")
+	itemList, err := itemDb.GetAllItems()
 	if err != nil {
-		fmt.Println("error opening json file")
+		fmt.Printf("error getting items: %v\n", err)
 		return err
 	}
+	return c.JSON(http.StatusOK, itemList)
+}
 
-	defer jsonFile.Close()
-
-	jsonData, err := ioutil.ReadAll(jsonFile)
+func searchItems(c echo.Context) error {
+	// get the query parameters
+	key := c.QueryParam("keyword")
+	items, err := itemDb.SearchItems(key)
 	if err != nil {
-		fmt.Println("fail to read json file")
+		fmt.Printf("error searching for items: %v\n", err)
 		return err
 	}
-
-	var jsonContent ResponseItems
-	json.Unmarshal(jsonData, &jsonContent)
-	return c.JSON(http.StatusOK, jsonContent)
-
+	return c.JSON(http.StatusOK, items)
 }
 
 func getItemsDetail(c echo.Context) error {
 	itemId := c.Param("itemId")
 	// string to int
 	id, err := strconv.Atoi(itemId)
-
-	jsonFile, err := os.Open("items.json")
 	if err != nil {
-		fmt.Println("error opening json file")
+		fmt.Printf("error converting itemId to int: %v\n", err)
 		return err
 	}
-	defer jsonFile.Close()
-
-	jsonData, err := ioutil.ReadAll(jsonFile)
+	item, err := itemDb.GetItemById(id)
 	if err != nil {
-		fmt.Println("fail to read json file")
+		fmt.Printf("error getting item by id: %v\n", err)
 		return err
 	}
-
-	var jsonContent ResponseItems
-	json.Unmarshal(jsonData, &jsonContent)
-	if id-1 >= 0 && id-1 < len(jsonContent.Items) {
-		itemDetail := jsonContent.Items[id-1]
-		return c.JSON(http.StatusOK, itemDetail)
-	} else {
-		message := Response{Message: "The item is not exist."}
-		return c.JSON(http.StatusBadRequest, message)
-	}
+	return c.JSON(http.StatusOK, item)
 }
 
 func getImg(c echo.Context) error {
@@ -194,6 +167,39 @@ func main() {
 	e.POST("/items", addItem)
 
 	e.GET("/image/:imageFilename", getImg)
+
+	e.GET("/search", searchItems)
+
+	// Database Initialization
+	database, err := sql.Open(dbType, dbPath)
+	if err != nil {
+		fmt.Printf("error opening database: %v\n", err)
+		return
+	}
+	defer database.Close()
+	// Open and read sql file
+	sqlFile, err := os.Open("sql/items.db")
+	if err != nil {
+		fmt.Printf("error opening SQL file: %v\n", err)
+		return
+	}
+	defer sqlFile.Close()
+	sqlData, err := ioutil.ReadAll(sqlFile)
+	if err != nil {
+		fmt.Printf("error reading SQL data: %v\n", err)
+		return
+	}
+	_, err = database.Exec(string(sqlData))
+	if err != nil {
+		fmt.Printf("error executing SQL statements: %v\n", err)
+		return
+	} else {
+		fmt.Printf("successfully execute SQL statements!")
+	}
+	// Construct a instance of ItemsDB
+	itemDb = &db.ItemsDB{
+		Db: database,
+	}
 
 	// Start server
 	e.Logger.Fatal(e.Start(":9000"))
